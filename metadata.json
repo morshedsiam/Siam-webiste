@@ -1,0 +1,7 @@
+{
+  "name": "Gemini Voice Chat",
+  "description": "A voice-enabled chat application powered by Google's Gemini API. You can talk to the AI and hear its responses.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
