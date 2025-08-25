@@ -119,7 +119,7 @@ const App: React.FC = () => {
         try {
             // WARNING: Storing API keys directly in the code is insecure and should not be done in production.
             // This is for demonstration purposes only, to allow deployment on static hosting platforms.
-            const apiKey = "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";
+            const apiKey = "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";
 
             const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
                 method: "POST",
