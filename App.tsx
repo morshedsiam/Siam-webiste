@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GoogleGenAI, Chat } from "@google/genai";
 import { type ChatMessage, MessageRole } from './types';
 
 // --- SVG Icons (defined outside component to prevent re-creation) ---
@@ -37,12 +36,12 @@ interface ChatMessageBubbleProps {
 const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({ message }) => {
     const isUser = message.role === MessageRole.USER;
     return (
-        <div className={`flex items-start gap-4 my-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
-            {!isUser && <BotIcon className="w-8 h-8 text-indigo-400 flex-shrink-0 mt-1" />}
-            <div className={`max-w-xl p-4 rounded-2xl shadow-md prose prose-invert prose-p:my-0 ${isUser ? 'bg-blue-600 text-white rounded-br-none' : 'bg-gray-700 text-gray-200 rounded-bl-none'}`}>
+        <div className={`flex items-start gap-3 my-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
+            {!isUser && <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center flex-shrink-0 mt-1"><BotIcon className="w-5 h-5 text-gray-300" /></div>}
+            <div className={`max-w-2xl p-4 rounded-2xl shadow-md prose prose-p:my-0 ${isUser ? 'bg-blue-600 text-white rounded-br-none' : 'bg-gray-800 text-gray-200 rounded-bl-none'}`}>
                 <p>{message.content}</p>
             </div>
-            {isUser && <UserIcon className="w-8 h-8 text-blue-300 flex-shrink-0 mt-1" />}
+            {isUser && <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center flex-shrink-0 mt-1"><UserIcon className="w-5 h-5 text-gray-300" /></div>}
         </div>
     );
 };
@@ -50,32 +49,17 @@ const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({ message }) => {
 // --- Main App Component ---
 
 const App: React.FC = () => {
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [messages, setMessages] = useState<ChatMessage[]>([
+        {
+            role: MessageRole.MODEL,
+            content: "Hello! I'm a voice-enabled AI assistant. How can I help you today?"
+        }
+    ]);
     const [userInput, setUserInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [chatSession, setChatSession] = useState<Chat | null>(null);
     const [isListening, setIsListening] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
     const recognitionRef = useRef<any>(null); // Using 'any' for SpeechRecognition for cross-browser compatibility
-
-    // Initialize Gemini Chat
-    useEffect(() => {
-        try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-            const chat = ai.chats.create({ model: 'gemini-2.5-flash' });
-            setChatSession(chat);
-            setMessages([{
-                role: MessageRole.MODEL,
-                content: "Hello! I'm a Gemini-powered voice assistant. How can I help you today?"
-            }]);
-        } catch (error) {
-            console.error("Failed to initialize Gemini:", error);
-            setMessages([{
-                role: MessageRole.MODEL,
-                content: "Sorry, I couldn't connect to the AI service. Please check your API key and network connection."
-            }]);
-        }
-    }, []);
 
     // Scroll to bottom of messages
     useEffect(() => {
@@ -118,39 +102,103 @@ const App: React.FC = () => {
     }, []);
 
     const handleSendMessage = useCallback(async (text: string) => {
-        if (isLoading || !text.trim() || !chatSession) return;
+        if (isLoading || !text.trim()) return;
         
         setIsLoading(true);
-        const userMessage: ChatMessage = { role: MessageRole.USER, content: text };
-        setMessages(prev => [...prev, userMessage, { role: MessageRole.MODEL, content: '' }]);
         setUserInput('');
+        const userMessage: ChatMessage = { role: MessageRole.USER, content: text };
+        const updatedMessages = [...messages, userMessage];
+        
+        setMessages([...updatedMessages, { role: MessageRole.MODEL, content: '' }]);
+
+        const apiMessages = updatedMessages.map(msg => ({
+            role: msg.role === MessageRole.USER ? 'user' : 'assistant',
+            content: msg.content
+        }));
 
         try {
-            const stream = await chatSession.sendMessageStream({ message: text });
+            // WARNING: Storing API keys directly in the code is insecure and should not be done in production.
+            // This is for demonstration purposes only, to allow deployment on static hosting platforms.
+            const apiKey = "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";
+
+            const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    "model": "deepseek/deepseek-r1-0528-qwen3-8b:free",
+                    "messages": apiMessages,
+                    "stream": true
+                })
+            });
+
+            if (!response.ok) {
+                 const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
+                 throw new Error(errorData.error.message || "API error");
+            }
+            
+            if (!response.body) {
+                throw new Error("Response body is null");
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
             let fullResponse = '';
-            for await (const chunk of stream) {
-                const chunkText = chunk.text;
-                fullResponse += chunkText;
-                setMessages(prev => {
-                    const newMessages = [...prev];
-                    newMessages[newMessages.length - 1].content = fullResponse;
-                    return newMessages;
-                });
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // Keep the last, potentially incomplete line
+
+                for (const line of lines) {
+                    if (line.trim() === '' || !line.startsWith('data: ')) continue;
+
+                    const data = line.substring(6);
+                    if (data.trim() === '[DONE]') {
+                        break;
+                    }
+
+                    try {
+                        const parsed = JSON.parse(data);
+                        const content = parsed.choices[0]?.delta?.content;
+                        if (content) {
+                            fullResponse += content;
+                            setMessages(prev => {
+                                const newMessages = [...prev];
+                                newMessages[newMessages.length - 1].content = fullResponse;
+                                return newMessages;
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error parsing stream data chunk:', data, e);
+                    }
+                }
             }
             speak(fullResponse);
+
         } catch (error) {
             console.error("Error sending message:", error);
-            const errorMessage = "Sorry, I encountered an error. Please try again.";
+            const errorMessage = `Sorry, I encountered an error: ${error instanceof Error ? error.message : "Unknown error"}. Please check your API key and network connection.`;
             setMessages(prev => {
                 const newMessages = [...prev];
-                newMessages[newMessages.length - 1].content = errorMessage;
+                 if (newMessages.length > 0 && newMessages[newMessages.length - 1].role === MessageRole.MODEL) {
+                    newMessages[newMessages.length - 1].content = errorMessage;
+                } else {
+                    newMessages.push({ role: MessageRole.MODEL, content: errorMessage });
+                }
                 return newMessages;
             });
             speak(errorMessage);
         } finally {
             setIsLoading(false);
         }
-    }, [isLoading, chatSession, speak]);
+    }, [isLoading, messages, speak]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -170,10 +218,10 @@ const App: React.FC = () => {
     };
 
     return (
-        <div className="bg-gray-900 text-white min-h-screen flex flex-col font-sans bg-gradient-to-br from-gray-900 via-indigo-900 to-blue-900">
-            <header className="py-4 px-6 shadow-lg bg-black/30 backdrop-blur-sm sticky top-0 z-10">
-                <h1 className="text-2xl font-bold tracking-wider text-center text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-blue-400">
-                    Gemini Voice Chat
+        <div className="bg-black text-white min-h-screen flex flex-col">
+            <header className="py-4 px-6 border-b border-gray-800 backdrop-blur-sm sticky top-0 bg-black/50 z-10">
+                <h1 className="text-xl font-semibold text-center text-gray-200">
+                    AI Voice Chat
                 </h1>
             </header>
             
@@ -183,13 +231,13 @@ const App: React.FC = () => {
                         <ChatMessageBubble key={index} message={msg} />
                     ))}
                     {isLoading && messages.length > 0 && messages[messages.length - 1].role === MessageRole.MODEL && messages[messages.length - 1].content === '' && (
-                        <div className="flex items-start gap-4 my-4 justify-start">
-                           <BotIcon className="w-8 h-8 text-indigo-400 flex-shrink-0 mt-1" />
-                           <div className="bg-gray-700 p-4 rounded-2xl rounded-bl-none shadow-md">
+                        <div className="flex items-start gap-3 my-4 justify-start">
+                           <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center flex-shrink-0 mt-1"><BotIcon className="w-5 h-5 text-gray-300" /></div>
+                           <div className="bg-gray-800 p-4 rounded-2xl rounded-bl-none shadow-md">
                                 <div className="flex items-center justify-center space-x-2">
-                                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse [animation-delay:-0.3s]"></div>
-                                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse [animation-delay:-0.15s]"></div>
-                                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></div>
+                                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse [animation-delay:-0.3s]"></div>
+                                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse [animation-delay:-0.15s]"></div>
+                                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
                                 </div>
                            </div>
                         </div>
@@ -198,15 +246,15 @@ const App: React.FC = () => {
                 </div>
             </main>
 
-            <footer className="p-4 bg-black/30 backdrop-blur-sm sticky bottom-0">
-                <form onSubmit={handleSubmit} className="max-w-4xl mx-auto flex items-center gap-2">
+            <footer className="p-4 backdrop-blur-sm sticky bottom-0 bg-black/50 border-t border-gray-800">
+                <form onSubmit={handleSubmit} className="max-w-4xl mx-auto flex items-center gap-3">
                     <div className="relative flex-grow">
                         <input
                             type="text"
                             value={userInput}
                             onChange={(e) => setUserInput(e.target.value)}
                             placeholder="Type a message or use the microphone..."
-                            className="w-full bg-gray-800 border-2 border-gray-600 rounded-full py-3 pl-5 pr-14 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-300"
+                            className="w-full bg-gray-900 border border-gray-700 rounded-full py-3 pl-5 pr-14 text-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all duration-300"
                             disabled={isLoading}
                         />
                          <button
@@ -221,7 +269,7 @@ const App: React.FC = () => {
                     </div>
                     <button
                         type="submit"
-                        className="bg-indigo-600 text-white rounded-full p-3 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-indigo-500 transition-all duration-300 transform active:scale-95"
+                        className="bg-blue-600 text-white rounded-full p-3 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-black focus:ring-blue-500 transition-colors duration-300 transform active:scale-95"
                         disabled={isLoading || !userInput.trim()}
                         title="Send Message"
                     >
